@@ -1,42 +1,86 @@
 import re
 import numpy as np
 from tabulate import tabulate
+import os
 
 BIG_M = 1000000
 
+def obter_proximo_arquivo_resultado():
+    """Encontra o próximo nome de arquivo disponível (resultado1.txt, resultado2.txt, etc.)"""
+    contador = 1
+    while True:
+        nome_arquivo = f"resultado{contador}.txt"
+        if not os.path.exists(nome_arquivo):
+            return nome_arquivo
+        contador += 1
+
 def ler_arquivo(nome_arquivo):
     with open(nome_arquivo, 'r', encoding='utf-8') as arquivo:
-        linhas = [linha.strip() for linha in arquivo.readlines() if linha.strip()]
+        linhas = [linha.strip() for linha in arquivo.readlines()]
 
     if not linhas:
         raise ValueError("Arquivo vazio")
 
-    linha_fo = linhas[0]
-    if not linha_fo.upper().startswith('MAX'):
-        raise ValueError("Deve começar com 'Max'")
+    linha_fo = linhas[0].strip()
+    if not linha_fo.upper().startswith(('MAX', 'MIN')):
+        raise ValueError("Primeira linha deve começar com 'MAX' ou 'MIN'")
 
+    sense = linha_fo[:3].upper()
     fo_str = linha_fo[3:].strip()
     coef_fo = extrair_coeficientes(fo_str)
     
-    restricoes = []
-    vars_irrestritas = set()
+    if len(linhas) < 2 or linhas[1] != '':
+        raise ValueError("Segunda linha deve estar em branco")
     
-    for linha in linhas[1:]:
-        if re.match(r'^[xX]\d+\s*>=\s*0$', linha):
-            continue
-        
-        if re.match(r'^[xX](\d+)\s*E\s*IR$', linha, re.IGNORECASE):
-            var_num = int(re.match(r'^[xX](\d+)\s*E\s*IR$', linha, re.IGNORECASE).group(1))
-            vars_irrestritas.add(var_num)
-            continue
-
+    restricoes = []
+    idx = 2
+    while idx < len(linhas) and linhas[idx] != '':
+        linha = linhas[idx]
         match = re.match(r'(.+?)(<=|>=|=)(.+)', linha)
         if match:
             lhs, op, rhs = match.groups()
             coef_restr = extrair_coeficientes(lhs)
-            restricoes.append((coef_restr, float(rhs.strip()), op))
-
-    return coef_fo, restricoes, vars_irrestritas
+            restricoes.append((coef_restr, float(rhs.strip()), op.strip()))
+        idx += 1
+    
+    if idx < len(linhas) and linhas[idx] == '':
+        idx += 1
+    
+    vars_irrestritas = set()
+    vars_negativas = set()
+    
+    while idx < len(linhas):
+        linha = linhas[idx].strip()
+        if linha == '':
+            idx += 1
+            continue
+        
+        match_livre = re.match(r'^(\w+)\s+livre$', linha, re.IGNORECASE)
+        if match_livre:
+            var_nome = match_livre.group(1)
+            var_num = int(re.search(r'\d+', var_nome).group())
+            vars_irrestritas.add(var_num)
+            idx += 1
+            continue
+        
+        match_dominio = re.match(r'^(\w+)\s*(>=|<=)\s*0$', linha)
+        if match_dominio:
+            var_nome = match_dominio.group(1)
+            relacional = match_dominio.group(2)
+            var_num = int(re.search(r'\d+', var_nome).group())
+            
+            if relacional == '<=':
+                vars_negativas.add(var_num)
+            
+            idx += 1
+            continue
+        
+        idx += 1
+    
+    if sense == 'MIN':
+        coef_fo = [-c for c in coef_fo]
+    
+    return coef_fo, restricoes, vars_irrestritas, vars_negativas, sense
 
 def extrair_coeficientes(expressao):
     s = expressao.replace(' ', '')
@@ -59,7 +103,17 @@ def extrair_coeficientes(expressao):
     
     return coefs
 
-def expandir_irrestritas(coef_fo, restricoes, vars_irrestritas):
+def expandir_irrestritas(coef_fo, restricoes, vars_irrestritas, vars_negativas):
+    if vars_negativas:
+        num_x = len(coef_fo)
+        for var_idx in vars_negativas:
+            if var_idx <= num_x:
+                coef_fo[var_idx-1] = -coef_fo[var_idx-1]
+                for i in range(len(restricoes)):
+                    coef_restr, rhs, op = restricoes[i]
+                    if var_idx-1 < len(coef_restr):
+                        coef_restr[var_idx-1] = -coef_restr[var_idx-1]
+    
     if not vars_irrestritas:
         return coef_fo, restricoes
     
@@ -87,8 +141,8 @@ def expandir_irrestritas(coef_fo, restricoes, vars_irrestritas):
     
     return nova_fo, novas_restricoes
 
-def montar_tableau(coef_fo, restricoes, vars_irrestritas):
-    coef_fo, restricoes = expandir_irrestritas(coef_fo, restricoes, vars_irrestritas)
+def montar_tableau(coef_fo, restricoes, vars_irrestritas, vars_negativas):
+    coef_fo, restricoes = expandir_irrestritas(coef_fo, restricoes, vars_irrestritas, vars_negativas)
     
     num_x = len(coef_fo)
     num_r = len(restricoes)
@@ -144,7 +198,7 @@ def formatar(val):
         return int(round(val))
     return round(val, 2)
 
-def imprimir(A, b, var_names, c, basic_vars, it=0):
+def imprimir(A, b, var_names, c, basic_vars, it=0, arquivo_saida=None):
     m, n = A.shape
     c_B = np.array([c[basic_vars[i]] for i in range(m)])
     z = -np.array(c) + c_B @ A
@@ -162,30 +216,41 @@ def imprimir(A, b, var_names, c, basic_vars, it=0):
     linha_z = ["-Z", 1] + [formatar(z[j]) for j in range(n)] + [formatar(z_b)]
     dados.append(linha_z)
     
-    print("\n" + "="*80)
-    print(f"ITERACAO {it}")
-    print("="*80)
-    print(tabulate(dados, headers=headers, tablefmt="grid"))
+    output = "\n" + "="*80 + "\n"
+    output += f"ITERACAO {it}\n"
+    output += "="*80 + "\n"
+    output += tabulate(dados, headers=headers, tablefmt="grid")
+    
+    print(output)
+    
+    if arquivo_saida:
+        with open(arquivo_saida, 'a', encoding='utf-8') as f:
+            f.write(output + "\n")
     
     return z, z_b
 
-def simplex(A, b, var_names, c, basic_vars):
+def simplex(A, b, var_names, c, basic_vars, arquivo_saida=None):
     it = 0
     
     while it < 100:
-        z, z_b = imprimir(A, b, var_names, c, basic_vars, it)
+        z, z_b = imprimir(A, b, var_names, c, basic_vars, it, arquivo_saida)
         
         if all(z[j] >= -1e-10 for j in range(len(z))):
-            if any(var_names[basic_vars[i]].startswith('a') for i in range(len(basic_vars))):
-                print("\nINVIAVEL")
-                return False
-            print("\nOTIMO")
-            return True
+            resultado = "\nINVIAVEL\n" if any(var_names[basic_vars[i]].startswith('a') for i in range(len(basic_vars))) else "\nOTIMO\n"
+            print(resultado)
+            if arquivo_saida:
+                with open(arquivo_saida, 'a', encoding='utf-8') as f:
+                    f.write(resultado)
+            return resultado == "\nOTIMO\n"
         
         col = np.argmin(z)
         
         if all(A[i, col] <= 1e-10 for i in range(len(b))):
-            print("\nILIMITADO")
+            resultado = "\nILIMITADO\n"
+            print(resultado)
+            if arquivo_saida:
+                with open(arquivo_saida, 'a', encoding='utf-8') as f:
+                    f.write(resultado)
             return False
         
         razoes = []
@@ -214,26 +279,43 @@ def simplex(A, b, var_names, c, basic_vars):
 
 def main():
     arquivo = 'exemplo.txt'
+    arquivo_resultado = obter_proximo_arquivo_resultado()
     
-    coef_fo, restricoes, vars_irrestritas = ler_arquivo(arquivo)
-    A, b, var_names, c, basic_vars = montar_tableau(coef_fo, restricoes, vars_irrestritas)
+    print(f"\nResultados serão salvos em: {arquivo_resultado}\n")
     
-    print("\nPROBLEMA:")
-    print(f"FO: {coef_fo}")
-    print(f"Restricoes: {len(restricoes)}")
-    print(f"Variaveis irrestritas: {vars_irrestritas if vars_irrestritas else 'Nenhuma'}")
+    coef_fo, restricoes, vars_irrestritas, vars_negativas, sense = ler_arquivo(arquivo)
+    A, b, var_names, c, basic_vars = montar_tableau(coef_fo, restricoes, vars_irrestritas, vars_negativas)
     
-    sucesso = simplex(A, b, var_names, c, basic_vars)
+    info_problema = "\nPROBLEMA:\n"
+    info_problema += f"Sense: {sense}\n"
+    info_problema += f"FO: {coef_fo}\n"
+    info_problema += f"Restricoes: {len(restricoes)}\n"
+    info_problema += f"Variaveis irrestritas: {vars_irrestritas if vars_irrestritas else 'Nenhuma'}\n"
+    info_problema += f"Variaveis negativas: {vars_negativas if vars_negativas else 'Nenhuma'}\n"
+    
+    print(info_problema)
+    
+    with open(arquivo_resultado, 'w', encoding='utf-8') as f:
+        f.write(info_problema)
+    
+    sucesso = simplex(A, b, var_names, c, basic_vars, arquivo_resultado)
     
     if sucesso:
         sbf = [0.0] * len(var_names)
         for i, idx in enumerate(basic_vars):
             sbf[idx] = b[i]
         
-        print("\nSOLUCAO:")
+        solucao = "\nSOLUCAO:\n"
         for i, var in enumerate(var_names):
             if not var.startswith('a') and sbf[i] != 0:
-                print(f"{var} = {formatar(sbf[i])}")
+                solucao += f"{var} = {formatar(sbf[i])}\n"
+        
+        print(solucao)
+        
+        with open(arquivo_resultado, 'a', encoding='utf-8') as f:
+            f.write(solucao)
+    
+    print(f"\nResultados salvos em: {arquivo_resultado}")
 
 if __name__ == "__main__":
     main()
