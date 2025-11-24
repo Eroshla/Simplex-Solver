@@ -299,11 +299,24 @@ def main():
         solucao += "="*80 + "\n"
         
         for i in range(num_vars_originais):
-            var = var_names[i]
-            if var.startswith('x'):
-                solucao += f"{var} = {formatar(sbf[i])}\n"
+            var_num = i + 1
+            valor = sbf[i]
+            
+            if var_num in vars_irrestritas:
+
+                idx_pos = i
+                idx_neg = i + 1
+                valor = sbf[idx_pos] - sbf[idx_neg]
+
+            elif var_num in vars_negativas:
+                valor = -valor
+            
+            solucao += f"x{var_num} = {formatar(valor)}\n"
         
-        solucao += f"\nValor Otimo (Z) = {formatar(valor_otimo)}\n"
+        if sense == 'MIN':
+            valor_otimo = -valor_otimo
+        
+        solucao += f"\nFO = {formatar(valor_otimo)}\n"
         solucao += "="*80 + "\n"
         
         print(solucao)
