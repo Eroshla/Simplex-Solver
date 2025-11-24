@@ -6,7 +6,6 @@ import os
 BIG_M = 1000000
 
 def obter_proximo_arquivo_resultado():
-    """Encontra o próximo nome de arquivo disponível (resultado1.txt, resultado2.txt, etc.)"""
     contador = 1
     while True:
         nome_arquivo = f"resultado{contador}.txt"
@@ -18,19 +17,10 @@ def ler_arquivo(nome_arquivo):
     with open(nome_arquivo, 'r', encoding='utf-8') as arquivo:
         linhas = [linha.strip() for linha in arquivo.readlines()]
 
-    if not linhas:
-        raise ValueError("Arquivo vazio")
-
     linha_fo = linhas[0].strip()
-    if not linha_fo.upper().startswith(('MAX', 'MIN')):
-        raise ValueError("Primeira linha deve começar com 'MAX' ou 'MIN'")
-
     sense = linha_fo[:3].upper()
     fo_str = linha_fo[3:].strip()
     coef_fo = extrair_coeficientes(fo_str)
-    
-    if len(linhas) < 2 or linhas[1] != '':
-        raise ValueError("Segunda linha deve estar em branco")
     
     restricoes = []
     idx = 2
@@ -43,8 +33,7 @@ def ler_arquivo(nome_arquivo):
             restricoes.append((coef_restr, float(rhs.strip()), op.strip()))
         idx += 1
     
-    if idx < len(linhas) and linhas[idx] == '':
-        idx += 1
+    idx += 1
     
     vars_irrestritas = set()
     vars_negativas = set()
@@ -241,7 +230,7 @@ def simplex(A, b, var_names, c, basic_vars, arquivo_saida=None):
             if arquivo_saida:
                 with open(arquivo_saida, 'a', encoding='utf-8') as f:
                     f.write(resultado)
-            return resultado == "\nOTIMO\n"
+            return resultado == "\nOTIMO\n", z_b
         
         col = np.argmin(z)
         
@@ -251,7 +240,7 @@ def simplex(A, b, var_names, c, basic_vars, arquivo_saida=None):
             if arquivo_saida:
                 with open(arquivo_saida, 'a', encoding='utf-8') as f:
                     f.write(resultado)
-            return False
+            return False, None
         
         razoes = []
         for i in range(len(b)):
@@ -275,7 +264,7 @@ def simplex(A, b, var_names, c, basic_vars, arquivo_saida=None):
         basic_vars[lin] = col
         it += 1
     
-    return False
+    return False, None
 
 def main():
     arquivo = 'exemplo.txt'
@@ -286,29 +275,36 @@ def main():
     coef_fo, restricoes, vars_irrestritas, vars_negativas, sense = ler_arquivo(arquivo)
     A, b, var_names, c, basic_vars = montar_tableau(coef_fo, restricoes, vars_irrestritas, vars_negativas)
     
+    num_vars_originais = len(coef_fo)
+    
     info_problema = "\nPROBLEMA:\n"
     info_problema += f"Sense: {sense}\n"
-    info_problema += f"FO: {coef_fo}\n"
+    info_problema += f"Variaveis: {num_vars_originais}\n"
     info_problema += f"Restricoes: {len(restricoes)}\n"
-    info_problema += f"Variaveis irrestritas: {vars_irrestritas if vars_irrestritas else 'Nenhuma'}\n"
-    info_problema += f"Variaveis negativas: {vars_negativas if vars_negativas else 'Nenhuma'}\n"
     
     print(info_problema)
     
     with open(arquivo_resultado, 'w', encoding='utf-8') as f:
         f.write(info_problema)
     
-    sucesso = simplex(A, b, var_names, c, basic_vars, arquivo_resultado)
+    sucesso, valor_otimo = simplex(A, b, var_names, c, basic_vars, arquivo_resultado)
     
     if sucesso:
         sbf = [0.0] * len(var_names)
         for i, idx in enumerate(basic_vars):
             sbf[idx] = b[i]
         
-        solucao = "\nSOLUCAO:\n"
-        for i, var in enumerate(var_names):
-            if not var.startswith('a') and sbf[i] != 0:
+        solucao = "\n" + "="*80 + "\n"
+        solucao += "SOLUCAO OTIMA\n"
+        solucao += "="*80 + "\n"
+        
+        for i in range(num_vars_originais):
+            var = var_names[i]
+            if var.startswith('x'):
                 solucao += f"{var} = {formatar(sbf[i])}\n"
+        
+        solucao += f"\nValor Otimo (Z) = {formatar(valor_otimo)}\n"
+        solucao += "="*80 + "\n"
         
         print(solucao)
         
