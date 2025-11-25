@@ -1,11 +1,11 @@
 import re
-import numpy as np
 from tabulate import tabulate
 import os
 
 BIG_M = 1000000
 
 def obter_proximo_arquivo_resultado():
+    """Encontra o próximo nome de arquivo disponível (resultado1.txt, resultado2.txt, etc.)"""
     contador = 1
     while True:
         nome_arquivo = f"resultado{contador}.txt"
@@ -17,10 +17,19 @@ def ler_arquivo(nome_arquivo):
     with open(nome_arquivo, 'r', encoding='utf-8') as arquivo:
         linhas = [linha.strip() for linha in arquivo.readlines()]
 
+    if not linhas:
+        raise ValueError("Arquivo vazio")
+
     linha_fo = linhas[0].strip()
+    if not linha_fo.upper().startswith(('MAX', 'MIN')):
+        raise ValueError("Primeira linha deve começar com 'MAX' ou 'MIN'")
+
     sense = linha_fo[:3].upper()
     fo_str = linha_fo[3:].strip()
     coef_fo = extrair_coeficientes(fo_str)
+    
+    if len(linhas) < 2 or linhas[1] != '':
+        raise ValueError("Segunda linha deve estar em branco")
     
     restricoes = []
     idx = 2
@@ -33,7 +42,8 @@ def ler_arquivo(nome_arquivo):
             restricoes.append((coef_restr, float(rhs.strip()), op.strip()))
         idx += 1
     
-    idx += 1
+    if idx < len(linhas) and linhas[idx] == '':
+        idx += 1
     
     vars_irrestritas = set()
     vars_negativas = set()
@@ -178,7 +188,17 @@ def montar_tableau(coef_fo, restricoes, vars_irrestritas, vars_negativas):
         if name.startswith('a'):
             c[i] = -BIG_M
     
-    return np.array(A), np.array(b), var_names, c, basic_vars
+    return A, b, var_names, c, basic_vars
+
+def produto_escalar(vec1, vec2):
+    """Calcula produto escalar entre dois vetores"""
+    return sum(v1 * v2 for v1, v2 in zip(vec1, vec2))
+
+def transpor_matriz(matriz):
+    """Transpõe uma matriz (troca linhas por colunas)"""
+    if not matriz:
+        return []
+    return [[matriz[i][j] for i in range(len(matriz))] for j in range(len(matriz[0]))]
 
 def formatar(val):
     if abs(val) > 1000:
@@ -188,17 +208,24 @@ def formatar(val):
     return round(val, 2)
 
 def imprimir(A, b, var_names, c, basic_vars, it=0, arquivo_saida=None):
-    m, n = A.shape
-    c_B = np.array([c[basic_vars[i]] for i in range(m)])
-    z = -np.array(c) + c_B @ A
-    z_b = c_B @ b
+    m = len(A)
+    n = len(A[0]) if A else 0
+    
+    c_B = [c[basic_vars[i]] for i in range(m)]
+    
+    A_T = transpor_matriz(A)
+    
+    c_B_A = [produto_escalar(c_B, coluna) for coluna in A_T]
+    z = [-c[j] + c_B_A[j] for j in range(n)]
+    
+    z_b = produto_escalar(c_B, b)
     
     headers = ["VB", "-Z"] + var_names + ["b"]
     dados = []
     
     for i in range(m):
         linha = [var_names[basic_vars[i]], 0]
-        linha += [formatar(A[i,j]) for j in range(n)]
+        linha += [formatar(A[i][j]) for j in range(n)]
         linha += [formatar(b[i])]
         dados.append(linha)
     
@@ -225,16 +252,17 @@ def simplex(A, b, var_names, c, basic_vars, arquivo_saida=None):
         z, z_b = imprimir(A, b, var_names, c, basic_vars, it, arquivo_saida)
         
         if all(z[j] >= -1e-10 for j in range(len(z))):
-            resultado = "\nINVIAVEL\n" if any(var_names[basic_vars[i]].startswith('a') for i in range(len(basic_vars))) else "\nOTIMO\n"
+            tem_artificial = any(var_names[basic_vars[i]].startswith('a') for i in range(len(basic_vars)))
+            resultado = "\nINVIAVEL\n" if tem_artificial else "\nOTIMO\n"
             print(resultado)
             if arquivo_saida:
                 with open(arquivo_saida, 'a', encoding='utf-8') as f:
                     f.write(resultado)
             return resultado == "\nOTIMO\n", z_b
         
-        col = np.argmin(z)
+        col = min(range(len(z)), key=lambda j: z[j])
         
-        if all(A[i, col] <= 1e-10 for i in range(len(b))):
+        if all(A[i][col] <= 1e-10 for i in range(len(b))):
             resultado = "\nILIMITADO\n"
             print(resultado)
             if arquivo_saida:
@@ -244,21 +272,22 @@ def simplex(A, b, var_names, c, basic_vars, arquivo_saida=None):
         
         razoes = []
         for i in range(len(b)):
-            if A[i, col] > 1e-10:
-                razoes.append((b[i] / A[i, col], i))
+            if A[i][col] > 1e-10:
+                razoes.append((b[i] / A[i][col], i))
             else:
                 razoes.append((float('inf'), i))
         
         _, lin = min(razoes)
         
-        pivo = A[lin, col]
-        A[lin] = A[lin] / pivo
+        pivo = A[lin][col]
+        
+        A[lin] = [A[lin][j] / pivo for j in range(len(A[lin]))]
         b[lin] = b[lin] / pivo
         
         for i in range(len(b)):
             if i != lin:
-                fator = A[i, col]
-                A[i] = A[i] - fator * A[lin]
+                fator = A[i][col]
+                A[i] = [A[i][j] - fator * A[lin][j] for j in range(len(A[i]))]
                 b[i] = b[i] - fator * b[lin]
         
         basic_vars[lin] = col
@@ -273,14 +302,17 @@ def main():
     print(f"\nResultados serão salvos em: {arquivo_resultado}\n")
     
     coef_fo, restricoes, vars_irrestritas, vars_negativas, sense = ler_arquivo(arquivo)
-    A, b, var_names, c, basic_vars = montar_tableau(coef_fo, restricoes, vars_irrestritas, vars_negativas)
     
     num_vars_originais = len(coef_fo)
+    
+    A, b, var_names, c, basic_vars = montar_tableau(coef_fo, restricoes, vars_irrestritas, vars_negativas)
     
     info_problema = "\nPROBLEMA:\n"
     info_problema += f"Sense: {sense}\n"
     info_problema += f"Variaveis: {num_vars_originais}\n"
     info_problema += f"Restricoes: {len(restricoes)}\n"
+    info_problema += f"Variaveis irrestritas: {vars_irrestritas if vars_irrestritas else 'Nenhuma'}\n"
+    info_problema += f"Variaveis negativas: {vars_negativas if vars_negativas else 'Nenhuma'}\n"
     
     print(info_problema)
     
@@ -298,18 +330,18 @@ def main():
         solucao += "SOLUCAO OTIMA\n"
         solucao += "="*80 + "\n"
         
+        idx_atual = 0
         for i in range(num_vars_originais):
             var_num = i + 1
-            valor = sbf[i]
             
             if var_num in vars_irrestritas:
-
-                idx_pos = i
-                idx_neg = i + 1
-                valor = sbf[idx_pos] - sbf[idx_neg]
-
-            elif var_num in vars_negativas:
-                valor = -valor
+                valor = sbf[idx_atual] - sbf[idx_atual + 1]
+                idx_atual += 2
+            else:
+                valor = sbf[idx_atual]
+                if var_num in vars_negativas:
+                    valor = -valor
+                idx_atual += 1
             
             solucao += f"x{var_num} = {formatar(valor)}\n"
         
